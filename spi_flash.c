@@ -18,6 +18,8 @@
 #define EEPROM_CMD_WEN    0b10011  // Write Enable command
 #define EEPROM_CMD_WDS    0b10000  // Write Disable command
 
+static uint8_t dump_flag = 0;
+
 /* static inline void cs_select(uint cs_pin) {
     asm volatile("nop \n nop \n nop"); // FIXME
     gpio_put(cs_pin, 1);
@@ -39,26 +41,6 @@ static inline void cs_deselect(uint cs_pin) {
     sleep_us(1); // Ensure CS hold time (tCSH) is met
 }
 
-/* oid __not_in_flash_func(flash_read)(spi_inst_t *spi, uint cs_pin, uint32_t addr, uint8_t *buf, size_t len) {
-    cs_select(cs_pin);
-    uint8_t cmdbuf[4] = {
-            FLASH_CMD_READ,
-            addr >> 16,
-            addr >> 8,
-            addr
-    };
-    spi_write_blocking(spi, cmdbuf, 4);
-    spi_read_blocking(spi, 0, buf, len);
-    cs_deselect(cs_pin);
-}
-
-void __not_in_flash_func(flash_write_enable)(spi_inst_t *spi, uint cs_pin) {
-    cs_select(cs_pin);
-    uint8_t cmd = FLASH_CMD_WRITE_EN;
-    spi_write_blocking(spi, &cmd, 1);
-    cs_deselect(cs_pin);
-} */
-
 void eeprom_write_enable(spi_inst_t *spi, uint cs_pin) {
     cs_deselect(cs_pin);
     cs_select(cs_pin);
@@ -77,6 +59,14 @@ void eeprom_write_enable(spi_inst_t *spi, uint cs_pin) {
     spi_write_blocking(spi, cmdbuf, 2);         // Send the two bytes
     cs_deselect(cs_pin);
 }
+void eeprom_write_disable(spi_inst_t *spi, uint cs_pin) {
+    cs_deselect(cs_pin);
+    cs_select(cs_pin);
+    uint16_t cmd = EEPROM_CMD_WDS << 11; // Command is 5 bits, padded to 16 bits
+    uint8_t cmdbuf[2] = {cmd >> 8, cmd & 0xFF}; // Split 16-bit command into two bytes
+    spi_write_blocking(spi, cmdbuf, 2);         // Send the two bytes
+    cs_deselect(cs_pin);
+}
 
 void eeprom_read(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t *data) {
     cs_deselect(cs_pin);
@@ -89,8 +79,10 @@ void eeprom_read(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t *data) {
     spi_read_blocking(spi, 0, databuf, 2);
     *data = (databuf[0] << 7) | databuf[1]>>1; //< big-endian -- changed shift
     // *data = (databuf[0] << 8) | databuf[1]; //< big-endian
-    // *data = (databuf[1] << 8) | databuf[0]; //< little-endian
-    // printf("data read: databuf[0]=0x%02X, databuf[1]=0x%02X\n", databuf[0], databuf[1]);
+    // *data = (databuf[0] << 7) | databuf[1]; //< big-endian
+    if(!dump_flag) {
+        printf("databuf[0]: 0x%02X, databuf[1]: 0x%02X\n", databuf[0], databuf[1]);
+    }
     cs_deselect(cs_pin);
 }
 
@@ -104,7 +96,7 @@ void eeprom_write(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t data) {
                    ((addr & 0x03FF) << 17) |           // 10-bit address
                    (data & 0xFFFF);                    // 16-bit data
 
-    // cmd <<= 1;
+    cmd <<= 1;
     // Debug: Print the cmd value
     printf("cmd: 0x%08X\n", cmd);
 
@@ -117,7 +109,7 @@ void eeprom_write(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t data) {
     };
 
     // Debug: Print the cmdbuf values
-    printf("cmdbuf: %02X %02X %02X %02X\n", cmdbuf[0], cmdbuf[1], cmdbuf[2], cmdbuf[3]);
+    // printf("cmdbuf: %02X %02X %02X %02X\n", cmdbuf[0], cmdbuf[1], cmdbuf[2], cmdbuf[3]);
 
     // Perform the SPI write operation
     spi_write_blocking(spi, cmdbuf, 4);
@@ -177,6 +169,7 @@ void eeprom_erase(spi_inst_t *spi, uint cs_pin, uint16_t addr) {
 
 void eeprom_dump(spi_inst_t *spi, uint cs_pin) {
     uint16_t data;
+    dump_flag = 1;
     printf("\nEEPROM Memory Dump:\n");
     printf("Addr  | Data\n");
     printf("------+-------\n");
@@ -189,6 +182,7 @@ void eeprom_dump(spi_inst_t *spi, uint cs_pin) {
         printf("%04X ", data);
     }
     printf("\n");
+    dump_flag = 0;
 }
 
 int main() {
@@ -255,6 +249,8 @@ int main() {
         eeprom_erase(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x3F0+i);
         eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x3F0+i, (0x0C00 + (i<<1))); // should increment by 2s
     }
+    eeprom_erase(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x220);
+    eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x220, 0xF1C2);
 
     eeprom_dump(spi_default, PICO_DEFAULT_SPI_CSN_PIN);
 
