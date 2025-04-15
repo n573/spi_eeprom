@@ -50,3 +50,11 @@ pico_enable_stdio_usb(spi_flash 1)
 pico_add_extra_outputs(spi_flash)
 
 # add url via pico_set_program_url
+
+add_compile_options(
+        -Wall
+        #-Wno-format          # int != int32_t as far as the compiler is concerned because gcc has int32_t as long int
+        -Wno-unused-function # we have some for the docs that aren't called
+        #-Wno-maybe-uninitialized
+        # -PICOTOOL_FORCE_FETCH_FROM_GIT
+)
