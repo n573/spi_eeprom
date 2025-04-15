@@ -77,8 +77,9 @@ void eeprom_read(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t *data) {
     spi_write_blocking(spi, cmdbuf, 2);
     /// Do not use spi_read_write_blocking because the address must be sent before receiving data
     spi_read_blocking(spi, 0, databuf, 2);
-    *data = (databuf[0] << 7) | databuf[1]>>1; //< big-endian -- changed shift
-    // *data = (databuf[0] << 8) | databuf[1]; //< big-endian
+    // *data = (databuf[0] << 7) | databuf[1]>>1; //< big-endian -- changed shift
+    *data = (databuf[0] << 8) | databuf[1]; //< big-endian
+    *data >>= 2;
     // *data = (databuf[0] << 7) | databuf[1]; //< big-endian
     if(!dump_flag) {
         printf("databuf[0]: 0x%02X, databuf[1]: 0x%02X\n", databuf[0], databuf[1]);
@@ -91,15 +92,22 @@ void eeprom_write(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t data) {
     sleep_us(1);
     cs_select(cs_pin);
 
+    // // Combine the 3-bit command, 10-bit address, and 16-bit data into a 29-bit value
+    // uint32_t cmd = ((uint32_t)EEPROM_CMD_WRITE << 27) | // 3-bit command
+    //                ((addr & 0x03FF) << 17) |           // 10-bit address
+    //                (data & 0xFFFF);                    // 16-bit data
+
     // Combine the 3-bit command, 10-bit address, and 16-bit data into a 29-bit value
-    uint32_t cmd = ((uint32_t)EEPROM_CMD_WRITE << 27) | // 3-bit command
-                   ((addr & 0x03FF) << 17) |           // 10-bit address
+    uint32_t cmd = ((uint32_t)EEPROM_CMD_WRITE << 26) | // 3-bit command
+                   ((addr & 0x03FF) << 16) |           // 10-bit address
                    (data & 0xFFFF);                    // 16-bit data
 
-    cmd <<= 1;
+    // cmd <<= 1;
+    // cmd <<= 2;
     // Debug: Print the cmd value
+    #ifdef DEBUG
     printf("cmd: 0x%08X\n", cmd);
-
+    #endif
     // Split the 32-bit cmd into 4 bytes for SPI transmission
     uint8_t cmdbuf[4] = {
         (cmd >> 24) & 0xFF,
@@ -109,7 +117,9 @@ void eeprom_write(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t data) {
     };
 
     // Debug: Print the cmdbuf values
-    // printf("cmdbuf: %02X %02X %02X %02X\n", cmdbuf[0], cmdbuf[1], cmdbuf[2], cmdbuf[3]);
+    #ifdef DEBUG
+    printf("cmdbuf: %02X %02X %02X %02X\n", cmdbuf[0], cmdbuf[1], cmdbuf[2], cmdbuf[3]);
+    #endif
 
     // Perform the SPI write operation
     spi_write_blocking(spi, cmdbuf, 4);
@@ -196,8 +206,8 @@ int main() {
     // spi_init(spi_default, 250 * 1000);
     // spi_set_format(spi_default, 16, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST); //< SPI Mode 0
     // spi_set_format(spi_default, 16, SPI_CPOL_1, SPI_CPHA_1, SPI_MSB_FIRST); //< SPI Mode 3
-    // spi_set_format(spi_default, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST); //< SPI Mode 0
-    spi_set_format(spi_default, 8, SPI_CPOL_1, SPI_CPHA_1, SPI_MSB_FIRST); //< SPI Mode 3
+    spi_set_format(spi_default, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST); //< SPI Mode 0
+    // spi_set_format(spi_default, 8, SPI_CPOL_1, SPI_CPHA_1, SPI_MSB_FIRST); //< SPI Mode 3
     gpio_set_function(PICO_DEFAULT_SPI_RX_PIN, GPIO_FUNC_SPI);
     gpio_set_function(PICO_DEFAULT_SPI_SCK_PIN, GPIO_FUNC_SPI);
     gpio_set_function(PICO_DEFAULT_SPI_TX_PIN, GPIO_FUNC_SPI);
@@ -240,19 +250,37 @@ int main() {
     for(int i=0; i<DEBUG_COUNT; i++) {
         eeprom_erase(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x11);
         // eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x11, 0xFEED);
-        eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x11, (0xF000 + i));
-        eeprom_read(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x11, &data);
-        printf("Read data at 0x11: 0x%04X\n", data);
+        eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x11+i, (0xF00D + i));
+        eeprom_read(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x11+i, &data);
+        printf("Read data at 0x%02x: 0x%04X\n", (0x11+i), data);
     }
 
     for(int i=0; i<=0xF; i++) {
         eeprom_erase(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x3F0+i);
-        eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x3F0+i, (0x0C00 + (i<<1))); // should increment by 2s
+        eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x3F0+i, (0x7C00 + (i<<1))); // should increment by 2s
+        eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x3E0+i, (0x8B00 + i)); // should increment by 1s
     }
     eeprom_erase(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x220);
     eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x220, 0xF1C2);
+    
+    // eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x0FF, 0x1234);
+    eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x0FF, 1234); // Note: Sending decimal number
 
+    // eeprom_dump(spi_default, PICO_DEFAULT_SPI_CSN_PIN);
+
+    eeprom_read(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x220, &data);
+    // printf("Read data at 0x220: 0x%04X\n", data);
+    eeprom_read(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x0FF, &data);
+    printf("Read data at 0x0FF: %d\n", data>>1);
+    
+    #define TEST_ALL
+    #ifdef TEST_ALL
+    for(int i=0; i<=0x3FF; i++) {
+        //! Write the value of an address to the address to figure out what is being shifted where
+        eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, i, i);
+    }
     eeprom_dump(spi_default, PICO_DEFAULT_SPI_CSN_PIN);
+    #endif
 
     /* char nc[2] = {'N', 'C'};
     eeprom_erase(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0xAA);
