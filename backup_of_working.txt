@@ -1,0 +1,38 @@
+/* DO NOT TOUCH THESE FUNCTIONS ONCE ADDED HERE */
+
+void eeprom_write(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t data) {
+    cs_deselect(cs_pin);
+    // sleep_us(1);
+    cs_select(cs_pin);
+
+    // Combine the 3-bit command, 10-bit address, and 16-bit data into a 29-bit value
+    uint32_t cmd = ((uint32_t)EEPROM_CMD_WRITE << 26) | // 3-bit command
+                   ((addr & 0x03FF) << 16) |           // 10-bit address
+                   (data & 0xFFFF);                    // 16-bit data
+// #define DEBUG
+    // Debug: Print the cmd value
+    #ifdef DEBUG
+    printf("cmd: 0x%08X\n", cmd);
+    #endif
+    // Split the 32-bit cmd into 4 bytes for SPI transmission
+    uint8_t cmdbuf[4] = {
+        (cmd >> 24) & 0xFF,
+        (cmd >> 16) & 0xFF,
+        (cmd >> 8) & 0xFF,
+        cmd & 0xFF
+    };
+
+    // Debug: Print the cmdbuf values
+    #ifdef DEBUG
+    printf("cmdbuf: %02X %02X %02X %02X\n", cmdbuf[0], cmdbuf[1], cmdbuf[2], cmdbuf[3]);
+    #endif
+
+    // Perform the SPI write operation
+    spi_write_blocking(spi, cmdbuf, 4);
+    // sleep_ms(10); // Wait for the maximum write cycle time to complete
+    // sleep_ms(4); // Wait for the typical write cycle time to complete
+    sleep_ms(7); // Wait for between the typical and the maximum write cycle time to complete
+    cs_deselect(cs_pin);
+    cs_select(cs_pin); // for repeatability (so that the previous write does not affect the next write)
+}
+
