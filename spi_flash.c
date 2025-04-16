@@ -77,25 +77,45 @@ void eeprom_write_disable(spi_inst_t *spi, uint cs_pin) {
     spi_write_blocking(spi, cmdbuf, 2);         // Send the two bytes
     cs_deselect(cs_pin);
 }
-
 void eeprom_read(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t *data) {
     cs_deselect(cs_pin);
     cs_select(cs_pin);
     uint16_t cmd = (EEPROM_CMD_READ << 13) | ((addr & 0x03FF) << 3); // 3-bit command + 10-bit address + 3 dummy bits
     uint8_t cmdbuf[2] = {cmd >> 8, cmd & 0xFF};
-    uint8_t databuf[2] = {0};
+    uint16_t databuf = 0;
     spi_write_blocking(spi, cmdbuf, 2);
     /// Do not use spi_read_write_blocking because the address must be sent before receiving data
-    spi_read_blocking(spi, 0, databuf, 2);
+    spi_read16_blocking(spi, 0, &databuf, 1);
     // *data = (databuf[0] << 7) | databuf[1]>>1; //< big-endian -- changed shift
-    *data = (databuf[0] << 8) | databuf[1]; //< big-endian
-    *data >>= 2;
+    printf("databuf before shifts = %04X\n", databuf);
+    // *data = (databuf[0] << 8) | databuf[1]; //< big-endian
+    // *data >>= 2;
+    *data = databuf;
     // *data = (databuf[0] << 7) | databuf[1]; //< big-endian
     /* if(!dump_flag) {
         printf("databuf[0]: 0x%02X, databuf[1]: 0x%02X\n", databuf[0], databuf[1]);
     } */
     cs_deselect(cs_pin);
 }
+// void eeprom_read(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t *data) {
+//     cs_deselect(cs_pin);
+//     cs_select(cs_pin);
+//     uint16_t cmd = (EEPROM_CMD_READ << 13) | ((addr & 0x03FF) << 3); // 3-bit command + 10-bit address + 3 dummy bits
+//     uint8_t cmdbuf[2] = {cmd >> 8, cmd & 0xFF};
+//     uint8_t databuf[2] = {0};
+//     spi_write_blocking(spi, cmdbuf, 2);
+//     /// Do not use spi_read_write_blocking because the address must be sent before receiving data
+//     spi_read_blocking(spi, 0, databuf, 2);
+//     // *data = (databuf[0] << 7) | databuf[1]>>1; //< big-endian -- changed shift
+//     printf("databuf before shifts = %02X %02X\n", databuf[0], databuf[1]);
+//     *data = (databuf[0] << 8) | databuf[1]; //< big-endian
+//     *data >>= 2;
+//     // *data = (databuf[0] << 7) | databuf[1]; //< big-endian
+//     /* if(!dump_flag) {
+//         printf("databuf[0]: 0x%02X, databuf[1]: 0x%02X\n", databuf[0], databuf[1]);
+//     } */
+//     cs_deselect(cs_pin);
+// }
 
 void eeprom_write(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t data) {
     cs_deselect(cs_pin);
@@ -135,6 +155,9 @@ void eeprom_write(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t data) {
     spi_write_blocking(spi, cmdbuf, 4);
     // sleep_ms(10); // Wait for the maximum write cycle time to complete
     // sleep_ms(4); // Wait for the typical write cycle time to complete
+    cs_deselect(cs_pin);
+    delay_250ns();
+    cs_select(cs_pin);
     sleep_ms(7); // Wait for between the typical and the maximum write cycle time to complete
     cs_deselect(cs_pin);
 }
@@ -169,14 +192,32 @@ void eeprom_dump(spi_inst_t *spi, uint cs_pin) {
     printf("\nEEPROM Memory Dump:\n");
     printf("Addr  | Data\n");
     printf("------+-------\n");
-    
+
+    cs_deselect(cs_pin);
+    cs_select(cs_pin);
+
+    // Send the initial READ command with the starting address (0x000)
+    uint16_t cmd = (EEPROM_CMD_READ << 13) | (0x000 << 3); // 3-bit command + 10-bit address + 3 dummy bits
+    uint8_t cmdbuf[2] = {cmd >> 8, cmd & 0xFF};
+    spi_write_blocking(spi, cmdbuf, 2);
+
     for (uint16_t addr = 0; addr <= 0x03FF; addr++) {
-        eeprom_read(spi, cs_pin, addr, &data);
+        uint8_t databuf[2] = {0};
+        spi_read_blocking(spi, 0, databuf, 2); // Read 2 bytes of data
+        data = (databuf[0] << 8) | databuf[1]; // Combine bytes into a 16-bit value
+        // data = (databuf[0] << 8) | databuf[1]>>1; // Combine bytes into a 16-bit value
+        // data >>=1;
+        data >>= 2; // Adjust for big-endian format
+        // data = (databuf[0] << 9) | databuf[1]<<1; // this is wrong
+        // data >>= 3; // Adjust for big-endian format
+
         if (addr % 16 == 0) {
             printf("\n%04X  | ", addr);
         }
         printf("%04X ", data);
     }
+
+    cs_deselect(cs_pin);
     printf("\n");
     dump_flag = 0;
 }
@@ -203,8 +244,8 @@ int main() {
     // spi_init(spi_default, 250 * 1000);
     // spi_set_format(spi_default, 16, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST); //< SPI Mode 0
     // spi_set_format(spi_default, 16, SPI_CPOL_1, SPI_CPHA_1, SPI_MSB_FIRST); //< SPI Mode 3
-    spi_set_format(spi_default, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST); //< SPI Mode 0
-    // spi_set_format(spi_default, 8, SPI_CPOL_1, SPI_CPHA_1, SPI_MSB_FIRST); //< SPI Mode 3
+    // spi_set_format(spi_default, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST); //< SPI Mode 0
+    spi_set_format(spi_default, 8, SPI_CPOL_1, SPI_CPHA_1, SPI_MSB_FIRST); //< SPI Mode 3
     gpio_set_function(PICO_DEFAULT_SPI_RX_PIN, GPIO_FUNC_SPI);
     gpio_set_function(PICO_DEFAULT_SPI_SCK_PIN, GPIO_FUNC_SPI);
     gpio_set_function(PICO_DEFAULT_SPI_TX_PIN, GPIO_FUNC_SPI);
@@ -313,6 +354,10 @@ int main() {
         eeprom_read(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x100 + i, &read_data);
         printf("Read data at 0x%03X: 0x%04X\n", 0x100 + i, read_data);
     }
+    eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x120, data_buf[0]);
+    eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x121, data_buf[1]);
+    eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x122, data_buf[2]);
+    eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x123, data_buf[3]);
     eeprom_dump(spi_default, PICO_DEFAULT_SPI_CSN_PIN);
     while (1) {
         sleep_ms(1000);
