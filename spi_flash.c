@@ -68,51 +68,36 @@ void eeprom_write_disable(spi_inst_t *spi, uint cs_pin) {
 }
 
 void eeprom_read(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t *data) {
-    if(!dump_flag) {
+    if (!dump_flag) {
         cs_deselect(cs_pin);
         cs_select(cs_pin);
     }
-    // uint16_t cmd = (EEPROM_CMD_READ << 13) | ((addr & 0x03FF) << 3); // 3-bit command + 10-bit address + 3 dummy bits
-    uint16_t cmd = (EEPROM_CMD_READ << 10) | ((addr & 0x03FF)); // 3-bit command + 10-bit address
+
+    // Construct the read command: 3-bit command + 10-bit address
+    uint16_t cmd = (EEPROM_CMD_READ << 10) | (addr & 0x03FF);
     uint8_t cmdbuf[2] = {cmd >> 8, cmd & 0xFF};
-    uint8_t databuf[2] = {0};
-    // uint16_t databuf[2] = {0}; // extra bits to account for shifting
+    uint8_t databuf[3] = {0}; // 3 bytes to accommodate the dummy bit and 16 data bits
+
+    // Send the read command
     spi_write_blocking(spi, cmdbuf, 2);
-    /// Do not use spi_read_write_blocking because the address must be sent before receiving data
-    // spi_read_blocking(spi, 0, (uint8_t*)databuf, 2);
-    spi_read_blocking(spi, 0, databuf, 2);
-    // spi_write_read_blocking(spi, cmdbuf, databuf, 2); -- confirmed incorrect
-    // *data = ((uint8_t)(databuf[0] << 8)) | ((uint8_t)(databuf[1]>>2)); //< big-endian -- changed shift
-    // *data = ((uint16_t)(databuf[0] << 8)) | ((uint8_t)(databuf[1]<<1)); //< big-endian -- changed shift
-    *data = ((uint16_t)(databuf[0] << 8)) | ((uint8_t)(databuf[1])); //< big-endian
-    // *data = (databuf[0] << 8) | databuf[1]; //< big-endian
-    // *data >>= 2;
-    // *data <<= 1; // adjust for dummy-bit
-    // Adjust for the dummy bit by shifting left and masking out the dummy bit
-    *data = (*data << 1) & 0xFFFF;
-    // *data >>= 1;
-    // *data = (databuf[0] << 7) | databuf[1]; //< big-endian
-    if(!dump_flag) {
-        printf("databuf[0]: 0x%02X, databuf[1]: 0x%02X\n", databuf[0], databuf[1]);
-        printf("Bits: ");
-        for (int i = 7; i >= 0; i--) {
-            printf("%d", (databuf[0] >> i) & 1);
-        }
-        printf(" ");
-        for (int i = 7; i >= 0; i--) {
-            printf("%d", (databuf[1] >> i) & 1);
-        }
-        printf("\n");
-        for (int i = 15; i >= 0; i--) {
-            if(i==7) printf(" ");
-            printf("%d", (*data >> i) & 1);
-        }
-        printf("\n");
+
+    // Read 17 bits (2 bytes + 1 extra bit for the dummy bit)
+    spi_read_blocking(spi, 0, databuf, 3);
+
+    // Combine the 17 bits into a 16-bit value
+    // Shift the first two bytes left by 1 to discard the dummy bit
+    *data = ((uint16_t)(databuf[0] << 9)) | ((uint16_t)(databuf[1] << 1)) | ((databuf[2] >> 7) & 0x01);
+
+    // Debug output (optional)
+    if (!dump_flag) {
+        printf("databuf[0]: 0x%02X, databuf[1]: 0x%02X, databuf[2]: 0x%02X\n", databuf[0], databuf[1], databuf[2]);
+        printf("Read data (after alignment): 0x%04X\n", *data);
     }
-    if(!dump_flag) {
+
+    if (!dump_flag) {
         cs_deselect(cs_pin);
-        cs_select(cs_pin); // for repeatability (so that the previous read does not affect the next operation) -- TEST
-    } 
+        cs_select(cs_pin); // Ensure repeatability
+    }
 }
 
 void eeprom_write(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t data) {
@@ -181,18 +166,43 @@ void eeprom_dump(spi_inst_t *spi, uint cs_pin) {
     printf("\nEEPROM Memory Dump:\n");
     printf("Addr  | Data\n");
     printf("------+-------\n");
-    cs_deselect(cs_pin); //< need the rising edge to begin transaction
+
+    // Start the read operation
+    cs_deselect(cs_pin); // Ensure a rising edge before starting
     cs_select(cs_pin);
+
+    // Construct the read command for the first address (0x000)
+    uint16_t cmd = (EEPROM_CMD_READ << 10) | (0x000 & 0x03FF); // Start at address 0x000
+    uint8_t cmdbuf[2] = {cmd >> 8, cmd & 0xFF};
+
+    // Send the read command
+    spi_write_blocking(spi, cmdbuf, 2);
+
+    // Sequentially read all addresses
     for (uint16_t addr = 0; addr <= 0x03FF; addr++) {
-        eeprom_read(spi, cs_pin, addr, &data); //< dump_flag=1 disables the CS select/deselect in the read function
+        uint8_t databuf[3] = {0}; // Buffer to hold the 17 bits (dummy + 16-bit data)
+
+        // Read the next 17 bits (2 bytes + 1 dummy bit)
+        // spi_write_blocking(spi, cmdbuf, 1); //< MSBs are CMD_READ
+        spi_write_blocking(spi, (uint8_t*)EEPROM_CMD_READ, 1); //< address auto-increments but still need to send "read" cmd
+        spi_read_blocking(spi, 0, databuf, 3);
+        // spi_read_blocking(spi, EEPROM_CMD_READ, databuf, 3);
+
+        // Combine the 17 bits into a 16-bit value
+        data = ((uint16_t)(databuf[0] << 9)) | ((uint16_t)(databuf[1] << 1)) | ((databuf[2] >> 7) & 0x01);
+
+        // Print the data
         if (addr % 16 == 0) {
             printf("\n%04X  | ", addr);
         }
         printf("%04X ", data);
     }
+
     printf("\n");
-    dump_flag = 0;
+
+    // End the read operation
     cs_deselect(cs_pin);
+    dump_flag = 0;
 }
 
 /* UNTESTED FUNCTIONS */
@@ -303,7 +313,7 @@ int main() {
     eeprom_read(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x0FF, &data);
     printf("Read data at 0x0FF: %d\n", data);
     
-    // #define TEST_ALL
+    #define TEST_ALL
     #ifdef TEST_ALL
     for(int i=0; i<=0x3FF; i++) {
         //! Write the value of an address to the address to figure out what is being shifted where
