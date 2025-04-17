@@ -90,10 +90,12 @@ void eeprom_read(spi_inst_t *spi, uint cs_pin, uint16_t addr, uint16_t *data) {
     *data = ((uint16_t)(databuf[0] << 9)) | ((uint16_t)(databuf[1] << 1)) | ((databuf[2] >> 7) & 0x01);
 
     // Debug output (optional)
+    #ifdef DEBUG
     if (!dump_flag) {
         // printf("databuf[0]: 0x%02X, databuf[1]: 0x%02X, databuf[2]: 0x%02X\n", databuf[0], databuf[1], databuf[2]);
         printf("Read data (after alignment): 0x%04X\n", *data);
     }
+    #endif
 
     if (!dump_flag) {
         cs_deselect(cs_pin);
@@ -161,42 +163,21 @@ void eeprom_erase(spi_inst_t *spi, uint cs_pin, uint16_t addr) {
     sleep_ms(4); // wait for typical write time for the erase cycle to complete
 }
 
-//! EEPROM DUMP IS NOT CURRENTLY FUNCTIONAL (WIP)
 void eeprom_dump(spi_inst_t *spi, uint cs_pin) {
     uint16_t data;
-    dump_flag = 1;
+    dump_flag = 1; // Set the dump flag to avoid redundant CS toggling in eeprom_read
     printf("\nEEPROM Memory Dump:\n");
     printf("Addr  | Data\n");
     printf("------+-------\n");
 
-    // Start the read operation
-    cs_deselect(cs_pin); // Ensure a rising edge before starting
-    cs_select(cs_pin);
+    for (uint16_t addr = 0; addr <= 0x03FF; addr++) {
+        //! Handle chip select here since dump_flag is active
+        cs_deselect(cs_pin);
+        cs_select(cs_pin);
+        // Use eeprom_read to read data from the EEPROM
+        eeprom_read(spi, cs_pin, addr, &data);
 
-    // Construct the read command for the first address (0x000)
-    uint16_t cmd = (EEPROM_CMD_READ << 10) | (0x000 & 0x03FF); // Start at address 0x000
-    uint8_t cmdbuf[2] = {cmd >> 8, cmd & 0xFF};
-
-    // Send the read command
-    spi_write_blocking(spi, cmdbuf, 2);
-
-    uint8_t databuf[3] = {0}; // Buffer to hold the 17 bits (dummy + 16-bit data)
-
-    // Handle the first read (with dummy bit)
-    spi_read_blocking(spi, 0, databuf, 3);
-    data = ((uint16_t)(databuf[0] << 9)) | ((uint16_t)(databuf[1] << 1)) | ((databuf[2] >> 7) & 0x01);
-    printf("\n%04X  | %04X ", 0x000, data);
-
-    // Sequentially read the remaining addresses (no dummy bit)
-    for (uint16_t addr = 1; addr <= 0x03FF; addr++) {
-        uint8_t databuf[2] = {0}; // Buffer to hold the 16-bit data
-        spi_write_blocking(spi, (uint8_t*)EEPROM_CMD_READ, 1); //< MSBs contain CMD_READ
-        spi_read_blocking(spi, 0, databuf, 2);
-
-        // Combine the 16 bits into a value
-        data = ((uint16_t)(databuf[0] << 8)) | (databuf[1]);
-
-        // Print the data
+        // Print the data in a formatted manner
         if (addr % 16 == 0) {
             printf("\n%04X  | ", addr);
         }
@@ -204,13 +185,40 @@ void eeprom_dump(spi_inst_t *spi, uint cs_pin) {
     }
 
     printf("\n");
+    dump_flag = 0; // Reset the dump flag
+}
+void eeprom_copy(spi_inst_t *spi, uint cs_pin, uint16_t* eeprom_buffer) {
+    uint16_t data;
+    dump_flag = 1; // Set the dump flag to avoid redundant CS toggling in eeprom_read
 
-    // End the read operation
-    cs_deselect(cs_pin);
-    dump_flag = 0;
+    for (uint16_t addr = 0; addr <= 0x03FF; addr++) {
+        //! Handle chip select here since dump_flag is active
+        cs_deselect(cs_pin);
+        cs_select(cs_pin);
+        // Use eeprom_read to read data from the EEPROM
+        eeprom_read(spi, cs_pin, addr, &data);
+        eeprom_buffer[addr] = data;
+        // Print the data in a formatted manner
+        // if (addr % 16 == 0) {
+        //     printf("\n%04X  | ", addr);
+        // }
+        // printf("%04X ", data);
+    }
+
+    // printf("\n");
+    dump_flag = 0; // Reset the dump flag
+    printf("EEPROM Memory Saved to buffer\r\n");
 }
 
-/* UNTESTED FUNCTIONS */
+void eeprom_paste(spi_inst_t *spi, uint cs_pin, const uint16_t* eeprom_buffer) {
+    for (uint16_t addr = 0; addr <= 0x03FF; addr++) {
+        // Write data from buffer to EEPROM
+        eeprom_write(spi, cs_pin, addr, eeprom_buffer[addr]);
+    }
+    
+    printf("Buffer contents written to EEPROM\r\n");
+}
+
 /*
 Usage: const char *message = "Hello, EEPROM!";
        eeprom_write_string(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x100, message);
@@ -229,13 +237,117 @@ void eeprom_write_string(spi_inst_t *spi, uint cs_pin, uint16_t start_addr, cons
     }
 }
 
+void eeprom_read_string(spi_inst_t *spi, uint cs_pin, uint16_t start_addr, char *str, size_t max_len) {
+    uint16_t word;
+    size_t i = 0;
+
+    while (i < max_len - 1) { // Reserve space for the null terminator
+        // Read a 16-bit word from the EEPROM
+        eeprom_read(spi, cs_pin, start_addr++, &word);
+
+        // Extract the two characters from the 16-bit word (big-endian)
+        str[i++] = (char)(word >> 8); // High byte
+        if (i < max_len - 1) {
+            str[i++] = (char)(word & 0xFF); // Low byte
+        }
+
+        // Stop if a null terminator is encountered
+        if ((char)(word >> 8) == '\0' || (char)(word & 0xFF) == '\0') {
+            break;
+        }
+    }
+
+    // Ensure the string is null-terminated
+    str[i] = '\0';
+}
+
+void print_buffer(uint16_t eeprom_buffer[0x400]) {
+    for(int i = 0; i < 0x400; i++) {
+        // Print the data in a formatted manner
+        if (i % 16 == 0) {
+            printf("\n%04X  | ", i);
+        }
+        printf("%04X ", eeprom_buffer[i]);
+    }
+}
+
+/* NON-WORKING FUNCTIONS */
+void eeprom_sequential_read_length(spi_inst_t *spi, uint cs_pin, uint16_t start_addr, uint16_t *buf, size_t length) {
+    if (length == 0) return;
+
+    cs_deselect(cs_pin);
+    delay_250ns();
+    // Ensure CS pin is high for the entire transaction
+    cs_select(cs_pin);
+
+    // Construct the read command for the first address
+    uint16_t cmd = (EEPROM_CMD_READ << 10) | (start_addr & 0x03FF);
+    uint8_t cmdbuf[2] = {cmd >> 8, cmd & 0xFF};
+
+    // Send the read command
+    spi_write_blocking(spi, cmdbuf, 2);
+
+    // Allocate a buffer for the entire read operation
+    uint8_t databuf[3 + (length - 1) * 2]; // First read (3 bytes) + subsequent reads (2 bytes each)
+
+    // Perform a single SPI read for all data
+    spi_read_blocking(spi, 0, databuf, sizeof(databuf));
+
+    // Handle the first read (with dummy bit)
+    buf[0] = ((uint16_t)(databuf[0] << 9)) | ((uint16_t)(databuf[1] << 1)) | ((databuf[2] >> 7) & 0x01);
+
+    // Handle subsequent reads (16 bits each)
+    for (size_t i = 1; i < length; i++) {
+        buf[i] = ((uint16_t)(databuf[3 + (i - 1) * 2] << 8)) | (databuf[3 + (i - 1) * 2 + 1]<<1)&0xFF | (databuf[3 + (i - 1) * 2 + 1]>>7)&0x01;
+        // buf[i] <<= 1;
+        // buf[i] >>=7;
+    }
+
+    // Ensure CS pin is low after the transaction
+    cs_deselect(cs_pin);
+}
+void eeprom_sequential_read_range(spi_inst_t *spi, uint cs_pin, uint16_t start_addr, uint16_t end_addr, uint16_t *buf) {
+    if (start_addr > end_addr) return;
+
+    size_t length = end_addr - start_addr + 1;
+
+    cs_deselect(cs_pin);
+    delay_250ns();
+    // Ensure CS pin is low for the entire transaction
+    cs_select(cs_pin);
+
+    // Construct the read command for the first address
+    uint16_t cmd = (EEPROM_CMD_READ << 10) | (start_addr & 0x03FF);
+    uint8_t cmdbuf[2] = {cmd >> 8, cmd & 0xFF};
+    uint8_t databuf[3 + (length - 1) * 2]; // Buffer for the first read (3 bytes) + subsequent reads (2 bytes each)
+
+    // Send the read command
+    spi_write_blocking(spi, cmdbuf, 2);
+
+    // Read all the data in one SPI transaction
+    spi_read_blocking(spi, 0, databuf, sizeof(databuf));
+
+    // Handle the first read (with dummy bit)
+    buf[0] = ((uint16_t)(databuf[0] << 9)) | ((uint16_t)(databuf[1] << 1)) | ((databuf[2] >> 7) & 0x01);
+
+    // Handle subsequent reads (16 bits each)
+    for (size_t i = 1; i < length; i++) {
+        buf[i] = ((uint16_t)(databuf[3 + (i - 1) * 2] << 8)) | databuf[3 + (i - 1) * 2 + 1];
+        // buf[i] <<= 1;
+    }
+
+    // Ensure CS pin is high after the transaction
+    cs_deselect(cs_pin);
+}
+
 int main() {
     stdio_init_all();
     sleep_ms(5000);
 
-    printf("EEPROM example\n");
+    printf("\nEEPROM example\n");
 
-    #define TP 14 // KB0
+    //#define TP 14 // KB0
+    #ifdef TP
     gpio_init(TP);
     gpio_set_dir(TP, GPIO_OUT);
     gpio_set_function(TP, GPIO_FUNC_SIO);
@@ -245,6 +357,7 @@ int main() {
     gpio_put(TP, 1);
     delay_250ns();
     gpio_put(TP,0);
+    #endif
 
     spi_init(spi_default, 1000 * 1000);
     // spi_init(spi_default, 500 * 1000);
@@ -305,11 +418,13 @@ int main() {
         eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x3F0+i, (0x7C00 + (i<<1))); // should increment by 2s
         eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x3E0+i, (0x8B00 + i)); // should increment by 1s
     } */
+    #ifdef WRITE
     eeprom_erase(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x220);
     eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x220, 0xF1C2);
     
     // eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x0FF, 0x1234);
     eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x0FF, 1234); // Note: Sending decimal number
+    #endif
 
     // eeprom_dump(spi_default, PICO_DEFAULT_SPI_CSN_PIN);
 
@@ -348,13 +463,15 @@ int main() {
     // eeprom_read(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0xA0, &data);
     // printf("Read data at 0xA0: 0x%04X\n", data);
 
-    for(int i=0; i<=4; i++) {
+    /* for(int i=0; i<=4; i++) {
         eeprom_erase(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x100+i);
-    }
+    } */
 
     // uint16_t data_buf[] = {0x1234, 0x5678, 0x9ABC, 0xDEF0};
     uint16_t data_buf[] = {0xFEED, 0x5731, 0xDEAD, 0xBEEF, 0xAAAA, 0xBBBB, 0xCCCC, 0xDDDD};
+    #ifdef WRITE
     eeprom_write_buf(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x100, data_buf, sizeof(data_buf) / sizeof(data_buf[0]));
+    #endif
 
     uint16_t read_data;
     for (size_t i = 0; i < sizeof(data_buf) / sizeof(data_buf[0]); i++) {
@@ -364,25 +481,103 @@ int main() {
     // eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x001, 0xBEEF);
     // eeprom_dump(spi_default, PICO_DEFAULT_SPI_CSN_PIN);
 
-    eeprom_erase(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x000);
+    /* eeprom_erase(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x000);
     // eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x000, 0xABCD); //< returns ABCC
     // eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x000, 0xDCBA);     //< returns DCBA (correct)
     // eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x000, 0xFFFF);
     eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x000, 0x1111);
     eeprom_read(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x000, &read_data);
-    printf("Read data at 0x%03X: 0x%04X\n", 0x000, read_data);
+    printf("Read data at 0x%03X: 0x%04X\n", 0x000, read_data); */
     // dump_flag=1; //< so the debug prints dont get looped
 
     // char* str = "HELLO";
     // char* read_str;
-    char read_str[2];
+    char read_str[5];
     char str[5] = {'H', 'i', ' ', 'N', 'C'};
-    printf("Sending %s", str);
+    printf("Sending %s\t", str);
+    #ifdef WRITE
     eeprom_write_string(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x300, str);
-    for (size_t i = 0; i < strlen(str)-1; i++) { /// \note strlen requires string.h
-        eeprom_read(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x300 + i, read_str);
-        printf("Read data at 0x%03X: %s\n", 0x300 + i, *read_str);
+    #endif
+    eeprom_read_string(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x300, read_str, 8); //max_len=8
+    printf("Read string @ 0x300+: %s\n", read_str);
+
+    char* str_lit = "Hello World";
+    // char* read_str2 = 0;
+    char read_str2[20];
+    printf("Sending %s\t", str_lit);
+    #ifdef WRITE
+    eeprom_write_string(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x400, str_lit);
+    #endif
+    eeprom_read_string(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x400, read_str2, 15); //max_len=15
+    printf("Read string @ 0x400+: %s\n", read_str2);
+
+    uint16_t buffer[10];
+    uint16_t start_addr = 0x101;
+
+    puts("\nValues to check: \n");
+    for(int i=0; i<0xF; i++) {
+        eeprom_read(spi_default, PICO_DEFAULT_SPI_CSN_PIN, start_addr-1+i, &read_data);
+        printf("At 0x%03X | 0x%04X\n", start_addr-1+i, read_data);
     }
+
+    #ifdef SEQ_READ
+    /**
+     * In short, the problem with using the sequential read operation here is due to a mismatch 
+     * of how the RP2040 SPI engine operates and how the AT93C86A EEPROM expects the SPI engine to operate. 
+     * AT93C86A expects a continuous clock whereas RP2040 applies SCK in bursts of 8 or 16 (depending on format selected)
+     */
+    puts("\n");
+    uint16_t buffer2[16];
+    eeprom_sequential_read_range(spi_default, PICO_DEFAULT_SPI_CSN_PIN, start_addr-1, 0x10F, buffer2);
+    for (size_t i = 0; i <= 0x10F - 0x100; i++) {
+        printf("Data at 0x%03X: 0x%04X\n", 0x100 + i, buffer2[i]);
+    }
+    puts("\n");
+    eeprom_sequential_read_length(spi_default, PICO_DEFAULT_SPI_CSN_PIN, start_addr, buffer, 8);
+    for (size_t i = 0; i < 8; i++) {
+        printf("Data at 0x%03X: 0x%04X\n", start_addr + i, buffer[i]);
+    }
+    puts("\n");
+    sleep_us(5);
+    uint8_t num2read = 4;
+    #define WRITE
+    #ifdef WRITE
+    uint16_t write_buf[num2read];
+    for(int i=0; i<num2read; i++) {
+        write_buf[i] = 0xAAAA;
+    }
+    eeprom_write_buf(spi_default, PICO_DEFAULT_SPI_CSN_PIN, start_addr, write_buf, num2read);
+    #endif
+    eeprom_sequential_read_length(spi_default, PICO_DEFAULT_SPI_CSN_PIN, start_addr, buffer, num2read);
+    for (size_t i = 0; i < num2read; i++) {
+        printf("Data at 0x%03X: 0x%04X\n", start_addr + i, buffer[i]);
+    }
+    #endif
+
+    // eeprom_dump(spi_default, PICO_DEFAULT_SPI_CSN_PIN);
+    // uint16_t save_buffer[0x3FF];
+    uint16_t save_buffer[0x400];
+    eeprom_copy(spi_default, PICO_DEFAULT_SPI_CSN_PIN, save_buffer);
+    print_buffer(save_buffer);
+    /* printf("\nBuffer Contents:\n");
+    printf("Addr  | Data\n");
+    printf("------+-------\n");
+    for(int i = 0; i < 0x400; i++) {
+        if (i % 16 == 0) {
+            printf("\n%04X  | ", i);
+        }
+        printf("%04X ", save_buffer[i]);
+    }
+    printf("\n"); */
+
+    for(int i=0; i<1024; i++) {
+        // save_buffer[i] *= -1; // negate all values
+        save_buffer[i] *= 2; // x2 all values
+    }
+    print_buffer(save_buffer);
+    // eeprom_paste(spi_default, PICO_DEFAULT_SPI_CSN_PIN, save_buffer);
+    eeprom_write_buf(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0, save_buffer, 1024);
+    eeprom_dump(spi_default, PICO_DEFAULT_SPI_CSN_PIN);
 
     while (1) {
         sleep_ms(1000);
@@ -399,13 +594,15 @@ int main() {
         // eeprom_read(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x3FF, &data);
         // printf("Read data at 0x3FF: 0x%04X\n", data);
 
-        /* gpio_put(TP, 1);
+        #ifdef TP
+        gpio_put(TP, 1);
         sleep_us(1);
         gpio_put(TP,0);
         delay_250ns();
         gpio_put(TP, 1);
         delay_250ns();
-        gpio_put(TP,0); */
+        gpio_put(TP,0);
+        #endif
         
         // eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x001, 0xBEEF);
         // eeprom_write(spi_default, PICO_DEFAULT_SPI_CSN_PIN, 0x000, 0xDEAD);
